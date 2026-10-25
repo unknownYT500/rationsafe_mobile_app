@@ -1,5 +1,6 @@
 // ration_safe_mobile_app/lib/data/local_db.dart
 import 'dart:convert';
+import 'dart:math';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:sqflite/sqflite.dart';
@@ -77,6 +78,7 @@ class _LocalDbPiiCrypto {
 class LocalDatabase {
   static final LocalDatabase instance = LocalDatabase._init();
   static Database? _database;
+  static final _random = Random();
 
   LocalDatabase._init();
 
@@ -92,9 +94,30 @@ class LocalDatabase {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _createDB,
+      onUpgrade: _onUpgrade,
     );
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      try {
+        await db.execute('ALTER TABLE local_outbox ADD COLUMN last_error TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE local_outbox ADD COLUMN last_attempt_at TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE local_outbox ADD COLUMN next_retry_at TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE local_outbox ADD COLUMN quarantined_at TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_outbox_sync ON local_outbox (status, next_retry_at, created_at)');
+      } catch (_) {}
+    }
   }
 
   Future<void> _createDB(Database db, int version) async {
@@ -130,7 +153,7 @@ class LocalDatabase {
       )
     ''');
 
-    // 3. Outbox for Signed Provisional Tokens
+    // 3. Outbox for Signed Provisional Tokens (Resilient DLQ & Backoff Schema)
     await db.execute('''
       CREATE TABLE local_outbox (
         id TEXT PRIMARY KEY,
@@ -139,8 +162,16 @@ class LocalDatabase {
         status TEXT NOT NULL DEFAULT 'PENDING',
         attempts INTEGER NOT NULL DEFAULT 0,
         reason TEXT,
+        last_error TEXT,
+        last_attempt_at TEXT,
+        next_retry_at TEXT,
+        quarantined_at TEXT,
         created_at TEXT NOT NULL
       )
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_outbox_sync ON local_outbox (status, next_retry_at, created_at)
     ''');
 
     // 4. Local Transactions
@@ -278,13 +309,30 @@ class LocalDatabase {
     );
   }
 
-  Future<List<SignedProvisionalToken>> getPendingOutboxTokens() async {
+  /// Fetches pending outbox tokens in paginated chunks (default limit: 50) using cursor filtering.
+  /// Prevents large memory allocations on low-spec Android POS hardware during deep queue syncs.
+  Future<List<SignedProvisionalToken>> getPendingOutboxChunk({
+    int limit = 50,
+    String? afterCreatedAt,
+    String? afterId,
+  }) async {
     final db = await database;
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+
+    String whereClause = "(status = 'PENDING' OR status = 'RETRYING') AND (next_retry_at IS NULL OR next_retry_at <= ?)";
+    final whereArgs = <dynamic>[nowIso];
+
+    if (afterCreatedAt != null && afterId != null) {
+      whereClause += " AND (created_at > ? OR (created_at = ? AND id > ?))";
+      whereArgs.addAll([afterCreatedAt, afterCreatedAt, afterId]);
+    }
+
     final res = await db.query(
       'local_outbox',
-      where: 'status = ?',
-      whereArgs: ['PENDING'],
-      limit: 100,
+      where: whereClause,
+      whereArgs: whereArgs,
+      orderBy: 'created_at ASC, id ASC',
+      limit: limit,
     );
 
     return res.map((row) {
@@ -293,16 +341,65 @@ class LocalDatabase {
     }).toList();
   }
 
+  /// Backward-compatible fetcher returning first 50 pending records.
+  Future<List<SignedProvisionalToken>> getPendingOutboxTokens() async {
+    return await getPendingOutboxChunk(limit: 50);
+  }
+
+  /// Calculates exponential backoff with randomized full jitter.
+  /// Formula: min(maxDelayMs, 2^attempt * baseDelayMs + random(0, 1000ms))
+  static Duration calculateBackoffWithJitter(
+    int attempt, {
+    int baseDelayMs = 1000,
+    int maxDelayMs = 60000,
+  }) {
+    final expMultiplier = 1 << (attempt > 6 ? 6 : attempt);
+    final expMs = baseDelayMs * expMultiplier;
+    final cappedExpMs = expMs > maxDelayMs ? maxDelayMs : expMs;
+    final jitterMs = _random.nextInt(1000); // 0 to 999 ms randomized jitter
+    return Duration(milliseconds: cappedExpMs + jitterMs);
+  }
+
+  /// Returns total active pending and retrying outbox records.
   Future<int> getOutboxDepth() async {
     final db = await database;
     final res = await db.rawQuery(
-      'SELECT COUNT(*) as count FROM local_outbox WHERE status = ?',
-      ['PENDING'],
+      "SELECT COUNT(*) as count FROM local_outbox WHERE status IN ('PENDING', 'RETRYING')",
     );
     return Sqflite.firstIntValue(res) ?? 0;
   }
 
+  /// Returns multi-status aggregate counts across outbox states.
+  Future<Map<String, int>> getOutboxStats() async {
+    final db = await database;
+    final res = await db.rawQuery('''
+      SELECT status, COUNT(*) as count 
+      FROM local_outbox 
+      GROUP BY status
+    ''');
+
+    final stats = <String, int>{
+      'PENDING': 0,
+      'RETRYING': 0,
+      'DEAD_LETTER': 0,
+      'FAILED': 0,
+      'TOTAL': 0,
+    };
+
+    int total = 0;
+    for (final row in res) {
+      final status = row['status']?.toString() ?? 'PENDING';
+      final count = (row['count'] as num?)?.toInt() ?? 0;
+      stats[status] = count;
+      total += count;
+    }
+    stats['TOTAL'] = total;
+    return stats;
+  }
+
+  /// Atomically marks reconciled outbox tokens as synced (deleting confirmed entries).
   Future<void> markOutboxItemsSynced(List<String> tokenIds) async {
+    if (tokenIds.isEmpty) return;
     final db = await database;
     final batch = db.batch();
     for (final id in tokenIds) {
@@ -315,17 +412,106 @@ class LocalDatabase {
     await batch.commit(noResult: true);
   }
 
-  Future<void> markOutboxItemFailed(String tokenId, String reason) async {
+  /// Increments retry attempt with exponential jitter backoff, or moves to Dead-Letter Queue (DLQ) if attempt ceiling reached.
+  Future<void> markOutboxAttemptFailed(
+    String tokenId,
+    String error, {
+    int maxAttempts = 5,
+  }) async {
     final db = await database;
+    final now = DateTime.now().toUtc();
+
+    final existing = await db.query('local_outbox', where: 'id = ?', whereArgs: [tokenId]);
+    if (existing.isEmpty) return;
+
+    final currentAttempts = (existing.first['attempts'] as num?)?.toInt() ?? 0;
+    final nextAttempt = currentAttempts + 1;
+
+    if (nextAttempt >= maxAttempts) {
+      // Automatic Dead-Letter Queue (DLQ) Quarantine (prevents Head-of-Line blocking)
+      await db.update(
+        'local_outbox',
+        {
+          'status': 'DEAD_LETTER',
+          'attempts': nextAttempt,
+          'last_error': error,
+          'reason': 'Exceeded maximum retry attempts ($maxAttempts)',
+          'quarantined_at': now.toIso8601String(),
+          'next_retry_at': null,
+        },
+        where: 'id = ?',
+        whereArgs: [tokenId],
+      );
+    } else {
+      final backoff = calculateBackoffWithJitter(nextAttempt);
+      final nextRetryAt = now.add(backoff).toIso8601String();
+      await db.update(
+        'local_outbox',
+        {
+          'status': 'RETRYING',
+          'attempts': nextAttempt,
+          'last_error': error,
+          'last_attempt_at': now.toIso8601String(),
+          'next_retry_at': nextRetryAt,
+        },
+        where: 'id = ?',
+        whereArgs: [tokenId],
+      );
+    }
+  }
+
+  /// Immediately quarantines an unrecoverable token (e.g. invalid cryptographic signature, terminal rejection)
+  /// directly into the Dead-Letter Queue without burning retries, keeping healthy queue items unblocked.
+  Future<void> quarantineDirectlyToDeadLetter(String tokenId, String errorReason) async {
+    final db = await database;
+    final nowIso = DateTime.now().toUtc().toIso8601String();
     await db.update(
       'local_outbox',
       {
-        'status': 'FAILED',
-        'reason': reason,
+        'status': 'DEAD_LETTER',
+        'last_error': errorReason,
+        'reason': errorReason,
+        'quarantined_at': nowIso,
+        'next_retry_at': null,
       },
       where: 'id = ?',
       whereArgs: [tokenId],
     );
+  }
+
+  /// Retrieves quarantined tokens from Dead-Letter Queue for audit and manual resolution.
+  Future<List<Map<String, dynamic>>> getDeadLetterTokens({int limit = 50}) async {
+    final db = await database;
+    return await db.query(
+      'local_outbox',
+      where: 'status = ?',
+      whereArgs: ['DEAD_LETTER'],
+      orderBy: 'quarantined_at DESC, created_at DESC',
+      limit: limit,
+    );
+  }
+
+  /// Re-queues a quarantined Dead-Letter Queue token back into PENDING state for retry.
+  Future<bool> requeueDeadLetterToken(String tokenId) async {
+    final db = await database;
+    final rows = await db.update(
+      'local_outbox',
+      {
+        'status': 'PENDING',
+        'attempts': 0,
+        'last_error': null,
+        'next_retry_at': null,
+        'quarantined_at': null,
+      },
+      where: 'id = ? AND status = ?',
+      whereArgs: [tokenId, 'DEAD_LETTER'],
+    );
+    return rows > 0;
+  }
+
+  /// Legacy failure marker for backward compatibility.
+  Future<void> markOutboxItemFailed(String tokenId, String reason) async {
+    await markOutboxAttemptFailed(tokenId, reason);
   }
 
   Future<void> clearAllData() async {

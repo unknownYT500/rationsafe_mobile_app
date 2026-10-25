@@ -8,6 +8,7 @@ import '../../widgets/glowing_badge.dart';
 import '../../widgets/state_stepper.dart';
 import '../../widgets/diagnostic_card.dart';
 import '../../widgets/token_qr_dialog.dart';
+import '../../widgets/dynamic_ephemeral_qr_dialog.dart';
 import '../../models/beneficiary.dart';
 import '../../models/provisional_token.dart';
 
@@ -225,6 +226,39 @@ class DispenseTab extends StatelessWidget {
                       _statPill('Consumed', '${activeCard.consumedQty.toStringAsFixed(1)} kg', AppColors.amber400),
                       _statPill('Remaining', '${activeCard.remainingQty.toStringAsFixed(1)} kg', AppColors.emerald400),
                     ],
+                  ),
+                  const SizedBox(height: 12),
+                  InkWell(
+                    onTap: () {
+                      showDialog(
+                        context: context,
+                        builder: (ctx) => DynamicEphemeralQrDialog(card: activeCard),
+                      );
+                    },
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: AppColors.cyan400.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppColors.cyan400.withValues(alpha: 0.3)),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          Icon(Icons.qr_code_2_rounded, size: 16, color: AppColors.cyan400),
+                          SizedBox(width: 6),
+                          Text(
+                            'Generate Dynamic Ephemeral QR (180s Anti-Replay)',
+                            style: TextStyle(
+                              color: AppColors.cyan400,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ],
               ),

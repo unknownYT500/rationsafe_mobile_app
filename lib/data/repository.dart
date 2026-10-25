@@ -216,31 +216,103 @@ class GrainTrustRepository {
     }
   }
 
-  // --- Batch Sync ---
+  // --- Resilient Chunked Batch Sync & Dead-Letter Queue Management ---
 
-  Future<Map<String, dynamic>> triggerBatchSync(String nodeId) async {
-    final pendingTokens = await _localDb.getPendingOutboxTokens();
-    if (pendingTokens.isEmpty) {
-      return {
-        'synced': 0,
-        'message': 'No pending provisional tokens in terminal outbox.',
-      };
+  Future<Map<String, dynamic>> triggerBatchSync(String nodeId, {int chunkSize = 50}) async {
+    int totalSynced = 0;
+    int totalQuarantined = 0;
+    int totalRetrying = 0;
+    int batchCount = 0;
+    String? lastError;
+
+    // Stream outbox in paginated chunks (50 items) to keep RAM usage bounded on low-spec POS terminals
+    while (true) {
+      final chunk = await _localDb.getPendingOutboxChunk(limit: chunkSize);
+      if (chunk.isEmpty) break;
+
+      batchCount++;
+      final batchId = 'batch_${generateUuidV7()}';
+      final tokenJsonList = chunk.map((t) => t.toJson()).toList();
+
+      try {
+        final result = await _supabase.reconcileSyncBatch(nodeId, batchId, tokenJsonList);
+        final items = result['items'] as List<dynamic>?;
+
+        if (items != null && items.isNotEmpty) {
+          // Process per-item ACK outcomes
+          final acceptedIds = <String>[];
+          for (final item in items) {
+            final tokenId = (item['token_id'] ?? item['id'])?.toString() ?? '';
+            final outcome = item['outcome']?.toString().toUpperCase() ?? 'REJECTED';
+            final reason = item['reason']?.toString() ?? 'Sync rejection';
+
+            if (outcome == 'ACCEPTED' || outcome == 'DUPLICATE') {
+              if (tokenId.isNotEmpty) acceptedIds.add(tokenId);
+              totalSynced++;
+            } else {
+              // Quarantine permanently rejected token to Dead-Letter Queue without blocking subsequent items
+              if (tokenId.isNotEmpty) {
+                await _localDb.quarantineDirectlyToDeadLetter(tokenId, reason);
+                totalQuarantined++;
+              }
+            }
+          }
+          if (acceptedIds.isNotEmpty) {
+            await _localDb.markOutboxItemsSynced(acceptedIds);
+          }
+        } else {
+          // Fallback blanket acknowledgment
+          final acceptedCount = (result['accepted'] as num?)?.toInt() ?? 0;
+          final duplicateCount = (result['duplicate'] as num?)?.toInt() ?? 0;
+          if (acceptedCount > 0 || duplicateCount > 0) {
+            final allIds = chunk.map((t) => t.id).toList();
+            await _localDb.markOutboxItemsSynced(allIds);
+            totalSynced += allIds.length;
+          } else {
+            // Apply exponential backoff with jitter on rejection
+            for (final token in chunk) {
+              await _localDb.markOutboxAttemptFailed(token.id, 'Sync batch rejected by central authority');
+              totalRetrying++;
+            }
+            break;
+          }
+        }
+      } catch (e) {
+        lastError = e.toString();
+        // Record failure and increment exponential jitter backoff for the chunk
+        for (final token in chunk) {
+          await _localDb.markOutboxAttemptFailed(token.id, 'Network error: $lastError');
+          totalRetrying++;
+        }
+        break; // Stop loop on network error to allow backoff timer to elapse
+      }
     }
 
-    final batchId = 'batch_${generateUuidV7()}';
-    final tokenJsonList = pendingTokens.map((t) => t.toJson()).toList();
-
-    final result = await _supabase.reconcileSyncBatch(nodeId, batchId, tokenJsonList);
-
-    // On accepted or duplicate, mark items synced locally
-    final acceptedTokenIds = pendingTokens.map((t) => t.id).toList();
-    await _localDb.markOutboxItemsSynced(acceptedTokenIds);
-
+    final stats = await _localDb.getOutboxStats();
     return {
-      'synced': pendingTokens.length,
-      'batch_id': batchId,
-      ...result,
+      'synced': totalSynced,
+      'quarantined_to_dlq': totalQuarantined,
+      'retrying': totalRetrying,
+      'batches_processed': batchCount,
+      'remaining_depth': await _localDb.getOutboxDepth(),
+      'outbox_stats': stats,
+      'last_error': lastError,
+      'message': totalSynced > 0
+          ? 'Synchronized $totalSynced provisional transactions across $batchCount batches.'
+          : (lastError != null ? 'Sync deferred: $lastError' : 'No outbox records ready for sync.'),
     };
+  }
+
+  Future<List<Map<String, dynamic>>> getDeadLetterTokens() async {
+    return await _localDb.getDeadLetterTokens();
+  }
+
+  Future<bool> requeueDeadLetterToken(String tokenId) async {
+    return await _localDb.requeueDeadLetterToken(tokenId);
+  }
+
+  Future<Map<String, int>> getOutboxStats() async {
+    return await _localDb.getOutboxStats();
   }
 
   // --- Registrations ---

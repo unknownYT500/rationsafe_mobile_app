@@ -54,6 +54,17 @@ class AppStateProvider extends ChangeNotifier {
   int _outboxDepth = 0;
   int get outboxDepth => _outboxDepth;
 
+  Map<String, int> _outboxStats = {
+    'PENDING': 0,
+    'RETRYING': 0,
+    'DEAD_LETTER': 0,
+    'TOTAL': 0,
+  };
+  Map<String, int> get outboxStats => _outboxStats;
+
+  List<Map<String, dynamic>> _deadLetterTokens = [];
+  List<Map<String, dynamic>> get deadLetterTokens => _deadLetterTokens;
+
   // Dispense Form State
   double _distQuantity = 5.0;
   double get distQuantity => _distQuantity;
@@ -123,6 +134,8 @@ class AppStateProvider extends ChangeNotifier {
       final fetchedRegs = await _repo.getRegistrations(isOnline: _isOnline);
       final fetchedAudit = await _repo.getAuditLogs(isOnline: _isOnline);
       final depth = await _repo.getOutboxDepth();
+      final stats = await _repo.getOutboxStats();
+      final dlq = await _repo.getDeadLetterTokens();
 
       _cards = fetchedCards;
       _lots = fetchedLots;
@@ -130,6 +143,8 @@ class AppStateProvider extends ChangeNotifier {
       _registrations = fetchedRegs;
       _auditLogs = fetchedAudit;
       _outboxDepth = depth;
+      _outboxStats = stats;
+      _deadLetterTokens = dlq;
 
       // Card Selection Preservation
       if (preferredCardId != null && _cards.any((c) => c.id == preferredCardId)) {
@@ -236,17 +251,35 @@ class AppStateProvider extends ChangeNotifier {
     }
   }
 
-  /// Trigger Batch Sync Now
+  /// Re-queue a quarantined Dead-Letter Queue token for retry
+  Future<void> requeueDeadLetterToken(String tokenId) async {
+    await _repo.requeueDeadLetterToken(tokenId);
+    await loadAllData();
+  }
+
+  /// Trigger Resilient Chunked Batch Sync
   Future<void> triggerBatchSync() async {
     _syncLoading = true;
     _syncNotice = null;
     notifyListeners();
 
     try {
-      final res = await _repo.triggerBatchSync(_selectedNodeId);
-      final accepted = res['accepted'] ?? res['synced'] ?? 0;
-      final dup = res['duplicate'] ?? 0;
-      _syncNotice = 'Batch sync complete! Accepted: $accepted, Duplicates: $dup';
+      final res = await _repo.triggerBatchSync(_selectedNodeId, chunkSize: 50);
+      final synced = res['synced'] ?? 0;
+      final dlq = res['quarantined_to_dlq'] ?? 0;
+      final retrying = res['retrying'] ?? 0;
+      final batches = res['batches_processed'] ?? 0;
+
+      if (dlq > 0) {
+        _syncNotice = 'Reconciliation completed ($batches batches). Synced: $synced, Quarantined to DLQ: $dlq.';
+      } else if (synced > 0) {
+        _syncNotice = 'Batch sync complete! Successfully synced $synced provisional tokens across $batches batches.';
+      } else if (retrying > 0) {
+        _syncNotice = 'Sync deferred: $retrying items in backoff retry window.';
+      } else {
+        _syncNotice = res['message'] ?? 'Terminal outbox is fully up to date.';
+      }
+
       await loadAllData();
     } catch (e) {
       _syncNotice = 'Sync failed: $e';
