@@ -9,6 +9,8 @@ import '../models/distribution_node.dart';
 import '../models/registration.dart';
 import '../models/audit_log.dart';
 import '../models/provisional_token.dart';
+import '../ai/edge_guardian.dart';
+import '../ai/blueprint_compliance.dart';
 
 class GrainTrustRepository {
   static final GrainTrustRepository instance = GrainTrustRepository._init();
@@ -146,6 +148,21 @@ class GrainTrustRepository {
         };
       }
 
+      // 1. Blueprint Statutory Rule Enforcement (NFSA 2013)
+      final compliance = await BlueprintComplianceEngine.validateDispense(
+        card: card,
+        requestedQuantityKg: quantity,
+      );
+      if (!compliance.isCompliant && !allowFallback) {
+        return {
+          'mode': 'OFFLINE_EDGE_SIGNED',
+          'success': false,
+          'code': 'ERR_NFSA_STATUTORY_VIOLATION',
+          'state': 'FAIL_REASON',
+          'message': compliance.violations.first,
+        };
+      }
+
       if (!hasQuota && !allowFallback) {
         return {
           'mode': 'OFFLINE_EDGE_SIGNED',
@@ -156,12 +173,33 @@ class GrainTrustRepository {
         };
       }
 
-      // Offline Fallback or Valid Quota: Sign Provisional Token
-      final keyPair = await _signer.getOrCreateNodeKeyPair();
+      // 2. Prepare Offline Token Metadata
       final counter = await _localDb.getNextCounter();
-      final subHash = await hashCardId(cardId);
       final txnId = 'txn_off_${generateUuidV7()}';
       final tokenId = 'tok_off_${generateUuidV7()}';
+
+      // 3. On-Device Edge Guardian AI Risk Assessment
+      final aiAssessment = await EdgeGuardianService.evaluateTransaction(
+        tokenId: tokenId,
+        card: card,
+        requestedQuantityKg: quantity,
+        currentCounter: counter,
+      );
+
+      if (aiAssessment.recommendedAction == GuardianAction.block && !allowFallback) {
+        return {
+          'mode': 'OFFLINE_EDGE_SIGNED',
+          'success': false,
+          'code': 'ERR_AI_FRAUD_PREVENTED',
+          'state': 'FAIL_REASON',
+          'message': aiAssessment.explanation,
+          'ai_assessment': aiAssessment.toJson(),
+        };
+      }
+
+      // Offline Fallback or Valid Quota: Sign Provisional Token
+      final keyPair = await _signer.getOrCreateNodeKeyPair();
+      final subHash = await hashCardId(cardId);
       final nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final expSec = nowSec + 3600; // 1-hour validity window
 
@@ -209,6 +247,10 @@ class GrainTrustRepository {
         'lot_id': lotId,
         'card_id': cardId,
         'counter': counter,
+        'ai_risk_score': aiAssessment.riskScore,
+        'ai_risk_level': aiAssessment.riskLevel.name.toUpperCase(),
+        'ai_flags': aiAssessment.flags,
+        'ai_action': aiAssessment.recommendedAction.name.toUpperCase(),
         'message': allowFallback
             ? 'Offline fallback authorization approved. Provisional signed token queued.'
             : 'Provisional grain issuance signed with Ed25519. Queued in terminal outbox.',

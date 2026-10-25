@@ -9,6 +9,7 @@ import '../../widgets/state_stepper.dart';
 import '../../widgets/diagnostic_card.dart';
 import '../../widgets/token_qr_dialog.dart';
 import '../../widgets/dynamic_ephemeral_qr_dialog.dart';
+import '../../widgets/vernacular_voice_dialog.dart';
 import '../../models/beneficiary.dart';
 import '../../models/provisional_token.dart';
 
@@ -260,6 +261,39 @@ class DispenseTab extends StatelessWidget {
                       ),
                     ),
                   ),
+                  const SizedBox(height: 8),
+                  InkWell(
+                    onTap: () {
+                      showDialog(
+                        context: context,
+                        builder: (ctx) => VernacularVoiceDialog(activeCard: activeCard),
+                      );
+                    },
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: AppColors.purple500.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppColors.purple400.withValues(alpha: 0.3)),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          Icon(Icons.record_voice_over_rounded, size: 16, color: AppColors.purple400),
+                          SizedBox(width: 6),
+                          Text(
+                            'Vernacular Voice Assistant (242 Regional Dialects)',
+                            style: TextStyle(
+                              color: AppColors.purple400,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -487,6 +521,56 @@ class DispenseTab extends StatelessWidget {
                           'The transaction has been committed and verified in the ledger.',
                       style: const TextStyle(color: AppColors.textMain, fontSize: 12.5),
                     ),
+                    if (state.distExecutionSummary!['ai_risk_score'] != null) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: AppColors.bgPrimary,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: state.distExecutionSummary!['ai_risk_level'] == 'LOW'
+                                ? AppColors.emerald500.withValues(alpha: 0.3)
+                                : AppColors.amber500.withValues(alpha: 0.3),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              state.distExecutionSummary!['ai_risk_level'] == 'LOW'
+                                  ? Icons.shield
+                                  : Icons.warning_amber_rounded,
+                              size: 18,
+                              color: state.distExecutionSummary!['ai_risk_level'] == 'LOW'
+                                  ? AppColors.emerald400
+                                  : AppColors.amber400,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Edge Guardian AI Risk: ${state.distExecutionSummary!['ai_risk_level']} (${state.distExecutionSummary!['ai_risk_score']})',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w800,
+                                      color: state.distExecutionSummary!['ai_risk_level'] == 'LOW'
+                                          ? AppColors.emerald400
+                                          : AppColors.amber400,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Recommended Action: ${state.distExecutionSummary!['ai_action'] ?? 'ALLOW'}',
+                                    style: const TextStyle(fontSize: 10, color: AppColors.textDim),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 12),
                     if (state.distExecutionSummary!['token'] != null)
                       SizedBox(

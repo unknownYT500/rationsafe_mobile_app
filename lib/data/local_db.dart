@@ -94,7 +94,7 @@ class LocalDatabase {
 
     return await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -116,6 +116,36 @@ class LocalDatabase {
       } catch (_) {}
       try {
         await db.execute('CREATE INDEX IF NOT EXISTS idx_outbox_sync ON local_outbox (status, next_retry_at, created_at)');
+      } catch (_) {}
+    }
+
+    if (oldVersion < 3) {
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS edge_ai_heuristics (
+            token_id TEXT PRIMARY KEY,
+            risk_score REAL NOT NULL,
+            risk_level TEXT NOT NULL,
+            heuristic_flags TEXT,
+            recommended_action TEXT NOT NULL,
+            analyzed_at INTEGER NOT NULL
+          )
+        ''');
+      } catch (_) {}
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS local_grievances (
+            id TEXT PRIMARY KEY,
+            card_id TEXT NOT NULL,
+            beneficiary_name TEXT,
+            category TEXT NOT NULL,
+            transcript TEXT NOT NULL,
+            language TEXT NOT NULL,
+            audio_timestamp TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'REGISTERED',
+            created_at TEXT NOT NULL
+          )
+        ''');
       } catch (_) {}
     }
   }
@@ -198,6 +228,33 @@ class LocalDatabase {
     ''');
 
     await db.insert('local_meta', {'key': 'counter', 'value': 1000});
+
+    // 6. Phase 4: Edge AI Anomaly Heuristics
+    await db.execute('''
+      CREATE TABLE edge_ai_heuristics (
+        token_id TEXT PRIMARY KEY,
+        risk_score REAL NOT NULL,
+        risk_level TEXT NOT NULL,
+        heuristic_flags TEXT,
+        recommended_action TEXT NOT NULL,
+        analyzed_at INTEGER NOT NULL
+      )
+    ''');
+
+    // 7. Phase 4: Offline Vernacular Citizen Grievances
+    await db.execute('''
+      CREATE TABLE local_grievances (
+        id TEXT PRIMARY KEY,
+        card_id TEXT NOT NULL,
+        beneficiary_name TEXT,
+        category TEXT NOT NULL,
+        transcript TEXT NOT NULL,
+        language TEXT NOT NULL,
+        audio_timestamp TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'REGISTERED',
+        created_at TEXT NOT NULL
+      )
+    ''');
   }
 
   // --- Monotonic Counter ---
@@ -509,9 +566,82 @@ class LocalDatabase {
     return rows > 0;
   }
 
-  /// Legacy failure marker for backward compatibility.
-  Future<void> markOutboxItemFailed(String tokenId, String reason) async {
-    await markOutboxAttemptFailed(tokenId, reason);
+  // --- Phase 4: AI Anomaly Heuristics & Citizen Grievance Storage ---
+  Future<void> recordAiHeuristic({
+    required String tokenId,
+    required double riskScore,
+    required String riskLevel,
+    required List<String> flags,
+    required String recommendedAction,
+  }) async {
+    final db = await database;
+    await db.insert(
+      'edge_ai_heuristics',
+      {
+        'token_id': tokenId,
+        'risk_score': riskScore,
+        'risk_level': riskLevel,
+        'heuristic_flags': jsonEncode(flags),
+        'recommended_action': recommendedAction,
+        'analyzed_at': DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<Map<String, dynamic>?> getAiHeuristic(String tokenId) async {
+    final db = await database;
+    final res = await db.query(
+      'edge_ai_heuristics',
+      where: 'token_id = ?',
+      whereArgs: [tokenId],
+    );
+    if (res.isEmpty) return null;
+    final item = Map<String, dynamic>.from(res.first);
+    if (item['heuristic_flags'] != null) {
+      try {
+        item['flags'] = jsonDecode(item['heuristic_flags'].toString());
+      } catch (_) {
+        item['flags'] = [];
+      }
+    }
+    return item;
+  }
+
+  Future<void> recordGrievance({
+    required String id,
+    required String cardId,
+    String? beneficiaryName,
+    required String category,
+    required String transcript,
+    required String language,
+    required String audioTimestamp,
+  }) async {
+    final db = await database;
+    await db.insert(
+      'local_grievances',
+      {
+        'id': id,
+        'card_id': cardId,
+        'beneficiary_name': beneficiaryName,
+        'category': category,
+        'transcript': transcript,
+        'language': language,
+        'audio_timestamp': audioTimestamp,
+        'status': 'REGISTERED',
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getLocalGrievances({int limit = 50}) async {
+    final db = await database;
+    return await db.query(
+      'local_grievances',
+      orderBy: 'created_at DESC',
+      limit: limit,
+    );
   }
 
   Future<void> clearAllData() async {
@@ -520,6 +650,8 @@ class LocalDatabase {
     await db.delete('local_lots');
     await db.delete('local_outbox');
     await db.delete('local_transactions');
+    await db.delete('edge_ai_heuristics');
+    await db.delete('local_grievances');
     await db.update('local_meta', {'value': 1000}, where: 'key = ?', whereArgs: ['counter']);
   }
 }
