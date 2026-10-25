@@ -7,10 +7,31 @@ import 'hash_utils.dart';
 
 class Ed25519Service {
   final Ed25519 _algorithm = Ed25519();
-  final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  
+  // Hardened hardware-backed secure storage options
+  static const _androidOptions = AndroidOptions(
+    keyCipherAlgorithm: KeyCipherAlgorithm.RSA_ECB_OAEPwithSHA_256andMGF1Padding,
+    storageCipherAlgorithm: StorageCipherAlgorithm.AES_GCM_NoPadding,
+  );
+  
+  static const _iosOptions = IOSOptions(
+    accessibility: KeychainAccessibility.first_unlock_this_device,
+  );
+
+  final FlutterSecureStorage _storage = const FlutterSecureStorage(
+    aOptions: _androidOptions,
+    iOptions: _iosOptions,
+  );
 
   static const String _privKeyStorageKey = 'graintrust_node_private_key_hex';
   static const String _pubKeyStorageKey = 'graintrust_node_public_key_hex';
+
+  /// Securely zeroes out sensitive byte buffers in memory to prevent RAM scraping.
+  void _zeroize(List<int> bytes) {
+    for (int i = 0; i < bytes.length; i++) {
+      bytes[i] = 0;
+    }
+  }
 
   /// Retrieves or generates the durable Ed25519 key pair for this terminal.
   Future<Map<String, String>> getOrCreateNodeKeyPair() async {
@@ -26,22 +47,30 @@ class Ed25519Service {
 
     // Generate fresh keypair
     final keyPair = await _algorithm.newKeyPair();
-    final privBytes = await keyPair.extractPrivateKeyBytes();
-    final pubKey = await keyPair.extractPublicKey();
+    List<int>? privBytes;
+    try {
+      privBytes = await keyPair.extractPrivateKeyBytes();
+      final pubKey = await keyPair.extractPublicKey();
 
-    final privHex = bytesToHex(privBytes);
-    final pubHex = bytesToHex(pubKey.bytes);
+      final privHex = bytesToHex(privBytes);
+      final pubHex = bytesToHex(pubKey.bytes);
 
-    await _storage.write(key: _privKeyStorageKey, value: privHex);
-    await _storage.write(key: _pubKeyStorageKey, value: pubHex);
+      await _storage.write(key: _privKeyStorageKey, value: privHex);
+      await _storage.write(key: _pubKeyStorageKey, value: pubHex);
 
-    return {
-      'privateKeyHex': privHex,
-      'publicKeyHex': pubHex,
-    };
+      return {
+        'privateKeyHex': privHex,
+        'publicKeyHex': pubHex,
+      };
+    } finally {
+      if (privBytes != null) {
+        _zeroize(privBytes);
+      }
+    }
   }
 
   /// Signs an arbitrary JSON payload using canonical JSON serialization and Ed25519.
+  /// Zeroizes the raw seed bytes from RAM immediately upon signature creation.
   Future<String> signCanonicalPayload(
     Map<String, dynamic> payload,
     String privateKeyHex,
@@ -50,14 +79,18 @@ class Ed25519Service {
     final messageBytes = utf8.encode(canonicalString);
 
     final privBytes = hexToBytes(privateKeyHex);
-    final keyPair = await _algorithm.newKeyPairFromSeed(privBytes.sublist(0, 32));
+    try {
+      final keyPair = await _algorithm.newKeyPairFromSeed(privBytes.sublist(0, 32));
 
-    final signature = await _algorithm.sign(
-      messageBytes,
-      keyPair: keyPair,
-    );
+      final signature = await _algorithm.sign(
+        messageBytes,
+        keyPair: keyPair,
+      );
 
-    return bytesToHex(signature.bytes);
+      return bytesToHex(signature.bytes);
+    } finally {
+      _zeroize(privBytes);
+    }
   }
 
   /// Verifies an Ed25519 signature against the canonical payload.

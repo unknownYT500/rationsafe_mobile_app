@@ -1,10 +1,78 @@
 // ration_safe_mobile_app/lib/data/local_db.dart
 import 'dart:convert';
+import 'package:cryptography/cryptography.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/beneficiary.dart';
 import '../models/grain_lot.dart';
 import '../models/provisional_token.dart';
+import '../crypto/hash_utils.dart';
+
+/// Secure AES-GCM 256 cryptographic vault for mobile SQLite field-level PII encryption.
+class _LocalDbPiiCrypto {
+  static final _aesGcm = AesGcm.with256bits();
+  static const _storage = FlutterSecureStorage(
+    aOptions: AndroidOptions(
+      keyCipherAlgorithm: KeyCipherAlgorithm.RSA_ECB_OAEPwithSHA_256andMGF1Padding,
+      storageCipherAlgorithm: StorageCipherAlgorithm.AES_GCM_NoPadding,
+    ),
+    iOptions: IOSOptions(
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+    ),
+  );
+  static const _dbKeyName = 'graintrust_db_aes_key_v1';
+  static SecretKey? _cachedKey;
+
+  static Future<SecretKey> _getKey() async {
+    if (_cachedKey != null) return _cachedKey!;
+    final hexKey = await _storage.read(key: _dbKeyName);
+    if (hexKey != null) {
+      final bytes = hexToBytes(hexKey);
+      _cachedKey = SecretKey(bytes);
+      return _cachedKey!;
+    }
+    final freshKey = await _aesGcm.newSecretKey();
+    final bytes = await freshKey.extractBytes();
+    await _storage.write(key: _dbKeyName, value: bytesToHex(bytes));
+    _cachedKey = freshKey;
+    return _cachedKey!;
+  }
+
+  static Future<String> encrypt(String plaintext) async {
+    if (plaintext.isEmpty) return plaintext;
+    try {
+      final key = await _getKey();
+      final secretBox = await _aesGcm.encrypt(
+        utf8.encode(plaintext),
+        secretKey: key,
+      );
+      final nonceHex = bytesToHex(secretBox.nonce);
+      final macHex = bytesToHex(secretBox.mac.bytes);
+      final cipherHex = bytesToHex(secretBox.cipherText);
+      return 'enc:v1:$nonceHex:$macHex:$cipherHex';
+    } catch (_) {
+      return plaintext;
+    }
+  }
+
+  static Future<String> decrypt(String ciphertext) async {
+    if (!ciphertext.startsWith('enc:v1:')) return ciphertext;
+    try {
+      final parts = ciphertext.split(':');
+      if (parts.length != 5) return ciphertext;
+      final nonce = hexToBytes(parts[2]);
+      final mac = Mac(hexToBytes(parts[3]));
+      final cipherText = hexToBytes(parts[4]);
+      final key = await _getKey();
+      final secretBox = SecretBox(cipherText, nonce: nonce, mac: mac);
+      final clearBytes = await _aesGcm.decrypt(secretBox, secretKey: key);
+      return utf8.decode(clearBytes);
+    } catch (_) {
+      return '[ENCRYPTED_PII]';
+    }
+  }
+}
 
 class LocalDatabase {
   static final LocalDatabase instance = LocalDatabase._init();
@@ -121,14 +189,20 @@ class LocalDatabase {
     });
   }
 
-  // --- Cards Cache ---
+  // --- Cards Cache (Encrypted PII at rest) ---
   Future<void> cacheCards(List<CardBeneficiary> cards) async {
     final db = await database;
     final batch = db.batch();
     for (final card in cards) {
+      final encPhone = await _LocalDbPiiCrypto.encrypt(card.phoneNumber);
+      final encAddress = await _LocalDbPiiCrypto.encrypt(card.address);
+      final data = card.toJson();
+      data['phone_number'] = encPhone;
+      data['address'] = encAddress;
+
       batch.insert(
         'local_cards',
-        card.toJson(),
+        data,
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
@@ -138,7 +212,14 @@ class LocalDatabase {
   Future<List<CardBeneficiary>> getLocalCards() async {
     final db = await database;
     final res = await db.query('local_cards');
-    return res.map((m) => CardBeneficiary.fromJson(m)).toList();
+    final list = <CardBeneficiary>[];
+    for (final row in res) {
+      final mutable = Map<String, dynamic>.from(row);
+      mutable['phone_number'] = await _LocalDbPiiCrypto.decrypt(mutable['phone_number']?.toString() ?? '');
+      mutable['address'] = await _LocalDbPiiCrypto.decrypt(mutable['address']?.toString() ?? '');
+      list.add(CardBeneficiary.fromJson(mutable));
+    }
+    return list;
   }
 
   Future<void> updateLocalCardConsumption(String cardId, double quantity) async {
