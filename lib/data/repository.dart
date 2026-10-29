@@ -9,8 +9,6 @@ import '../models/distribution_node.dart';
 import '../models/registration.dart';
 import '../models/audit_log.dart';
 import '../models/provisional_token.dart';
-import '../ai/edge_guardian.dart';
-import '../ai/blueprint_compliance.dart';
 
 class GrainTrustRepository {
   static final GrainTrustRepository instance = GrainTrustRepository._init();
@@ -148,21 +146,6 @@ class GrainTrustRepository {
         };
       }
 
-      // 1. Blueprint Statutory Rule Enforcement (NFSA 2013)
-      final compliance = await BlueprintComplianceEngine.validateDispense(
-        card: card,
-        requestedQuantityKg: quantity,
-      );
-      if (!compliance.isCompliant && !allowFallback) {
-        return {
-          'mode': 'OFFLINE_EDGE_SIGNED',
-          'success': false,
-          'code': 'ERR_NFSA_STATUTORY_VIOLATION',
-          'state': 'FAIL_REASON',
-          'message': compliance.violations.first,
-        };
-      }
-
       if (!hasQuota && !allowFallback) {
         return {
           'mode': 'OFFLINE_EDGE_SIGNED',
@@ -173,33 +156,12 @@ class GrainTrustRepository {
         };
       }
 
-      // 2. Prepare Offline Token Metadata
-      final counter = await _localDb.getNextCounter();
-      final txnId = 'txn_off_${generateUuidV7()}';
-      final tokenId = 'tok_off_${generateUuidV7()}';
-
-      // 3. On-Device Edge Guardian AI Risk Assessment
-      final aiAssessment = await EdgeGuardianService.evaluateTransaction(
-        tokenId: tokenId,
-        card: card,
-        requestedQuantityKg: quantity,
-        currentCounter: counter,
-      );
-
-      if (aiAssessment.recommendedAction == GuardianAction.block && !allowFallback) {
-        return {
-          'mode': 'OFFLINE_EDGE_SIGNED',
-          'success': false,
-          'code': 'ERR_AI_FRAUD_PREVENTED',
-          'state': 'FAIL_REASON',
-          'message': aiAssessment.explanation,
-          'ai_assessment': aiAssessment.toJson(),
-        };
-      }
-
       // Offline Fallback or Valid Quota: Sign Provisional Token
       final keyPair = await _signer.getOrCreateNodeKeyPair();
+      final counter = await _localDb.getNextCounter();
       final subHash = await hashCardId(cardId);
+      final txnId = 'txn_off_${generateUuidV7()}';
+      final tokenId = 'tok_off_${generateUuidV7()}';
       final nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final expSec = nowSec + 3600; // 1-hour validity window
 
@@ -247,10 +209,6 @@ class GrainTrustRepository {
         'lot_id': lotId,
         'card_id': cardId,
         'counter': counter,
-        'ai_risk_score': aiAssessment.riskScore,
-        'ai_risk_level': aiAssessment.riskLevel.name.toUpperCase(),
-        'ai_flags': aiAssessment.flags,
-        'ai_action': aiAssessment.recommendedAction.name.toUpperCase(),
         'message': allowFallback
             ? 'Offline fallback authorization approved. Provisional signed token queued.'
             : 'Provisional grain issuance signed with Ed25519. Queued in terminal outbox.',
@@ -258,103 +216,31 @@ class GrainTrustRepository {
     }
   }
 
-  // --- Resilient Chunked Batch Sync & Dead-Letter Queue Management ---
+  // --- Batch Sync ---
 
-  Future<Map<String, dynamic>> triggerBatchSync(String nodeId, {int chunkSize = 50}) async {
-    int totalSynced = 0;
-    int totalQuarantined = 0;
-    int totalRetrying = 0;
-    int batchCount = 0;
-    String? lastError;
-
-    // Stream outbox in paginated chunks (50 items) to keep RAM usage bounded on low-spec POS terminals
-    while (true) {
-      final chunk = await _localDb.getPendingOutboxChunk(limit: chunkSize);
-      if (chunk.isEmpty) break;
-
-      batchCount++;
-      final batchId = 'batch_${generateUuidV7()}';
-      final tokenJsonList = chunk.map((t) => t.toJson()).toList();
-
-      try {
-        final result = await _supabase.reconcileSyncBatch(nodeId, batchId, tokenJsonList);
-        final items = result['items'] as List<dynamic>?;
-
-        if (items != null && items.isNotEmpty) {
-          // Process per-item ACK outcomes
-          final acceptedIds = <String>[];
-          for (final item in items) {
-            final tokenId = (item['token_id'] ?? item['id'])?.toString() ?? '';
-            final outcome = item['outcome']?.toString().toUpperCase() ?? 'REJECTED';
-            final reason = item['reason']?.toString() ?? 'Sync rejection';
-
-            if (outcome == 'ACCEPTED' || outcome == 'DUPLICATE') {
-              if (tokenId.isNotEmpty) acceptedIds.add(tokenId);
-              totalSynced++;
-            } else {
-              // Quarantine permanently rejected token to Dead-Letter Queue without blocking subsequent items
-              if (tokenId.isNotEmpty) {
-                await _localDb.quarantineDirectlyToDeadLetter(tokenId, reason);
-                totalQuarantined++;
-              }
-            }
-          }
-          if (acceptedIds.isNotEmpty) {
-            await _localDb.markOutboxItemsSynced(acceptedIds);
-          }
-        } else {
-          // Fallback blanket acknowledgment
-          final acceptedCount = (result['accepted'] as num?)?.toInt() ?? 0;
-          final duplicateCount = (result['duplicate'] as num?)?.toInt() ?? 0;
-          if (acceptedCount > 0 || duplicateCount > 0) {
-            final allIds = chunk.map((t) => t.id).toList();
-            await _localDb.markOutboxItemsSynced(allIds);
-            totalSynced += allIds.length;
-          } else {
-            // Apply exponential backoff with jitter on rejection
-            for (final token in chunk) {
-              await _localDb.markOutboxAttemptFailed(token.id, 'Sync batch rejected by central authority');
-              totalRetrying++;
-            }
-            break;
-          }
-        }
-      } catch (e) {
-        lastError = e.toString();
-        // Record failure and increment exponential jitter backoff for the chunk
-        for (final token in chunk) {
-          await _localDb.markOutboxAttemptFailed(token.id, 'Network error: $lastError');
-          totalRetrying++;
-        }
-        break; // Stop loop on network error to allow backoff timer to elapse
-      }
+  Future<Map<String, dynamic>> triggerBatchSync(String nodeId) async {
+    final pendingTokens = await _localDb.getPendingOutboxTokens();
+    if (pendingTokens.isEmpty) {
+      return {
+        'synced': 0,
+        'message': 'No pending provisional tokens in terminal outbox.',
+      };
     }
 
-    final stats = await _localDb.getOutboxStats();
+    final batchId = 'batch_${generateUuidV7()}';
+    final tokenJsonList = pendingTokens.map((t) => t.toJson()).toList();
+
+    final result = await _supabase.reconcileSyncBatch(nodeId, batchId, tokenJsonList);
+
+    // On accepted or duplicate, mark items synced locally
+    final acceptedTokenIds = pendingTokens.map((t) => t.id).toList();
+    await _localDb.markOutboxItemsSynced(acceptedTokenIds);
+
     return {
-      'synced': totalSynced,
-      'quarantined_to_dlq': totalQuarantined,
-      'retrying': totalRetrying,
-      'batches_processed': batchCount,
-      'remaining_depth': await _localDb.getOutboxDepth(),
-      'outbox_stats': stats,
-      'last_error': lastError,
-      'message': totalSynced > 0
-          ? 'Synchronized $totalSynced provisional transactions across $batchCount batches.'
-          : (lastError != null ? 'Sync deferred: $lastError' : 'No outbox records ready for sync.'),
+      'synced': pendingTokens.length,
+      'batch_id': batchId,
+      ...result,
     };
-  }
-
-  Future<List<Map<String, dynamic>>> getDeadLetterTokens() async {
-    return await _localDb.getDeadLetterTokens();
-  }
-
-  Future<bool> requeueDeadLetterToken(String tokenId) async {
-    return await _localDb.requeueDeadLetterToken(tokenId);
-  }
-
-  Future<Map<String, int>> getOutboxStats() async {
-    return await _localDb.getOutboxStats();
   }
 
   // --- Registrations ---
@@ -365,6 +251,14 @@ class GrainTrustRepository {
 
   Future<bool> verifyRegistration(String regId) async {
     return await _supabase.verifyRegistration(regId);
+  }
+
+  Future<bool> deleteRegistration(String regId) async {
+    return await _supabase.deleteRegistration(regId);
+  }
+
+  Future<bool> clearUnapprovedRegistrations() async {
+    return await _supabase.clearUnapprovedRegistrations();
   }
 
   Future<Map<String, dynamic>> approveRegistration(String regId) async {

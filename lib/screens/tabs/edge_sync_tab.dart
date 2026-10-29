@@ -44,32 +44,39 @@ class EdgeSyncTab extends StatelessWidget {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: AppColors.cyan400.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(8),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: AppColors.cyan400.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Icon(Icons.sync_alt_rounded, size: 20, color: AppColors.cyan400),
                           ),
-                          child: const Icon(Icons.sync_alt_rounded, size: 20, color: AppColors.cyan400),
-                        ),
-                        const SizedBox(width: 10),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              activeNode.name,
-                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  activeNode.name,
+                                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                Text(
+                                  'Terminal ID: ${activeNode.id}',
+                                  style: const TextStyle(color: AppColors.textDim, fontSize: 11),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
                             ),
-                            Text(
-                              'Terminal ID: ${activeNode.id}',
-                              style: const TextStyle(color: AppColors.textDim, fontSize: 11),
-                            ),
-                          ],
-                        ),
-                      ],
+                          ),
+                        ],
+                      ),
                     ),
+                    const SizedBox(width: 10),
                     GlowingBadge(
                       label: state.isOnline ? 'ONLINE' : 'OFFLINE',
                       color: state.isOnline ? AppColors.emerald400 : AppColors.rose400,
@@ -83,73 +90,49 @@ class EdgeSyncTab extends StatelessWidget {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'PENDING OUTBOX DEPTH',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: 0.8,
-                            color: AppColors.textDim,
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'PENDING OUTBOX DEPTH',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.8,
+                              color: AppColors.textDim,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Text(
-                              '${state.outboxDepth}',
-                              style: TextStyle(
-                                fontSize: 24,
-                                fontWeight: FontWeight.w900,
-                                color: state.outboxDepth > 0 ? AppColors.amber400 : AppColors.emerald400,
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Text(
+                                '${state.outboxDepth}',
+                                style: TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.w900,
+                                  color: state.outboxDepth > 0 ? AppColors.amber400 : AppColors.emerald400,
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              state.outboxDepth == 1 ? 'provisional token queued' : 'provisional tokens queued',
-                              style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
-                            ),
-                          ],
-                        ),
-                      ],
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  state.outboxDepth == 1 ? 'token queued' : 'tokens queued',
+                                  style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
+                    const SizedBox(width: 8),
                     GlowingBadge(
                       label: state.outboxDepth > 0 ? 'SYNC REQUIRED' : 'UP TO DATE',
                       color: state.outboxDepth > 0 ? AppColors.amber400 : AppColors.emerald400,
                     ),
                   ],
-                ),
-
-                const SizedBox(height: 14),
-
-                // Outbox Queue Metrics (Chunking & DLQ Diagnostics)
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: AppColors.bgPrimary,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: AppColors.borderSubtle),
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
-                        children: [
-                          _queuePill('Pending', '${state.outboxStats['PENDING'] ?? 0}', AppColors.cyan400),
-                          _queuePill('Retrying', '${state.outboxStats['RETRYING'] ?? 0}', AppColors.amber400),
-                          _queuePill('Dead-Letter', '${state.outboxStats['DEAD_LETTER'] ?? 0}', (state.outboxStats['DEAD_LETTER'] ?? 0) > 0 ? AppColors.rose500 : AppColors.textDim),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      const Text(
-                        'Chunked Cursor Streaming: 50 items/batch · Exp Backoff with Randomized Jitter',
-                        style: TextStyle(color: AppColors.textDim, fontSize: 10),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
                 ),
 
                 const SizedBox(height: 16),
@@ -186,7 +169,7 @@ class EdgeSyncTab extends StatelessWidget {
                             children: const [
                               Icon(Icons.cloud_upload_outlined, size: 18),
                               SizedBox(width: 8),
-                              Text('Trigger Chunked Batch Sync', style: TextStyle(fontWeight: FontWeight.w800)),
+                              Text('Trigger Batch Sync Now', style: TextStyle(fontWeight: FontWeight.w800)),
                             ],
                           ),
                   ),
@@ -209,57 +192,6 @@ class EdgeSyncTab extends StatelessWidget {
                           child: Text(
                             state.syncNotice!,
                             style: const TextStyle(color: AppColors.emerald400, fontSize: 12),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-
-                // Dead-Letter Queue (DLQ) Quarantine Alert
-                if (state.deadLetterTokens.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppColors.rose500.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppColors.rose500.withValues(alpha: 0.4)),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            const Icon(Icons.warning_amber_rounded, color: AppColors.rose500, size: 18),
-                            const SizedBox(width: 8),
-                            Text(
-                              '${state.deadLetterTokens.length} Token(s) in Dead-Letter Queue (DLQ)',
-                              style: const TextStyle(
-                                color: AppColors.rose500,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        const Text(
-                          'Quarantined after repeated failures or irrecoverable rejection. Healthy queue items remain unblocked.',
-                          style: TextStyle(color: AppColors.textDim, fontSize: 11),
-                        ),
-                        const SizedBox(height: 8),
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: TextButton.icon(
-                            onPressed: () async {
-                              for (final dlq in state.deadLetterTokens) {
-                                final id = dlq['id']?.toString();
-                                if (id != null) await state.requeueDeadLetterToken(id);
-                              }
-                            },
-                            icon: const Icon(Icons.refresh, size: 14, color: AppColors.cyan400),
-                            label: const Text('Re-queue All for Retry', style: TextStyle(color: AppColors.cyan400, fontSize: 11)),
                           ),
                         ),
                       ],
@@ -302,14 +234,18 @@ class EdgeSyncTab extends StatelessWidget {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          node.name,
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w800,
-                            color: isSelected ? AppColors.cyan400 : AppColors.textMain,
+                        Expanded(
+                          child: Text(
+                            node.name,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w800,
+                              color: isSelected ? AppColors.cyan400 : AppColors.textMain,
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
+                        const SizedBox(width: 8),
                         GlowingBadge(
                           label: node.status,
                           color: node.isOnline ? AppColors.emerald400 : AppColors.rose400,
@@ -352,30 +288,6 @@ class EdgeSyncTab extends StatelessWidget {
           }),
         ],
       ),
-    );
-  }
-
-  static Widget _queuePill(String label, String value, Color color) {
-    return Column(
-      children: [
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w800,
-            color: color,
-          ),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 10,
-            color: AppColors.textDim,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ],
     );
   }
 }

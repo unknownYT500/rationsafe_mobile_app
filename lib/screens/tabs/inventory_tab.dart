@@ -21,15 +21,19 @@ class InventoryTab extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: const [
-              Text(
-                'CENTRAL GRAIN STOCKPILES',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.6,
-                  color: AppColors.textDim,
+              Expanded(
+                child: Text(
+                  'CENTRAL GRAIN STOCKPILES',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.6,
+                    color: AppColors.textDim,
+                  ),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
+              SizedBox(width: 8),
               GlowingBadge(
                 label: 'GOVERNMENT RESERVES',
                 color: AppColors.cyan400,
@@ -66,36 +70,43 @@ class InventoryTab extends StatelessWidget {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: (isWheat ? AppColors.amber400 : AppColors.cyan400).withValues(alpha: 0.15),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Icon(
-                                  Icons.inventory_2_rounded,
-                                  size: 18,
-                                  color: isWheat ? AppColors.amber400 : AppColors.cyan400,
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    lot.name,
-                                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+                          Expanded(
+                            child: Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: (isWheat ? AppColors.amber400 : AppColors.cyan400).withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(8),
                                   ),
-                                  Text(
-                                    'Lot ID: ${lot.id}',
-                                    style: const TextStyle(color: AppColors.textDim, fontSize: 11),
+                                  child: Icon(
+                                    Icons.inventory_2_rounded,
+                                    size: 18,
+                                    color: isWheat ? AppColors.amber400 : AppColors.cyan400,
                                   ),
-                                ],
-                              ),
-                            ],
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        lot.name,
+                                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      Text(
+                                        'Lot ID: ${lot.id}',
+                                        style: const TextStyle(color: AppColors.textDim, fontSize: 11),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
+                          const SizedBox(width: 8),
                           GlowingBadge(
                             label: lot.grainType.toUpperCase(),
                             color: isWheat ? AppColors.amber400 : AppColors.cyan400,
@@ -110,10 +121,14 @@ class InventoryTab extends StatelessWidget {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          const Text(
-                            'Available Warehouse Stock',
-                            style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+                          const Expanded(
+                            child: Text(
+                              'Available Warehouse Stock',
+                              style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
+                          const SizedBox(width: 8),
                           Text(
                             '${lot.remainingQuantity.toStringAsFixed(1)} / ${lot.totalQuantity.toStringAsFixed(1)} kg',
                             style: const TextStyle(
@@ -138,11 +153,12 @@ class InventoryTab extends StatelessWidget {
                       ),
                       const SizedBox(height: 10),
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          _statBox('Total Batch', '${lot.totalQuantity.toStringAsFixed(0)} kg'),
-                          _statBox('Dispensed', '${(lot.totalQuantity - lot.remainingQuantity).toStringAsFixed(0)} kg'),
-                          _statBox('Remaining', '${lot.remainingQuantity.toStringAsFixed(0)} kg'),
+                          Expanded(child: _statBox('Total Batch', '${lot.totalQuantity.toStringAsFixed(0)} kg')),
+                          const SizedBox(width: 8),
+                          Expanded(child: _statBox('Dispensed', '${(lot.totalQuantity - lot.remainingQuantity).toStringAsFixed(0)} kg')),
+                          const SizedBox(width: 8),
+                          Expanded(child: _statBox('Remaining', '${lot.remainingQuantity.toStringAsFixed(0)} kg')),
                         ],
                       ),
                     ],
@@ -157,7 +173,7 @@ class InventoryTab extends StatelessWidget {
 
   Widget _statBox(String label, String value) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       decoration: BoxDecoration(
         color: AppColors.bgPrimary,
         borderRadius: BorderRadius.circular(8),
@@ -165,8 +181,18 @@ class InventoryTab extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(color: AppColors.textDim, fontSize: 10)),
-          Text(value, style: const TextStyle(color: AppColors.textMain, fontSize: 12, fontWeight: FontWeight.w700)),
+          Text(
+            label,
+            style: const TextStyle(color: AppColors.textDim, fontSize: 10),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          Text(
+            value,
+            style: const TextStyle(color: AppColors.textMain, fontSize: 12, fontWeight: FontWeight.w700),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ],
       ),
     );

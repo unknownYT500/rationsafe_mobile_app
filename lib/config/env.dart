@@ -6,20 +6,20 @@
 class AppEnv {
   static const String supabaseUrl = String.fromEnvironment(
     'SUPABASE_URL',
-    defaultValue: 'http://localhost:54321', // default local Supabase or override
+    defaultValue: 'https://byxvxvsvhiyeryavgafx.supabase.co',
   );
 
   static const String supabaseAnonKey = String.fromEnvironment(
     'SUPABASE_KEY',
     defaultValue: String.fromEnvironment(
       'SUPABASE_ANON_KEY',
-      defaultValue: 'dummy_key',
+      defaultValue: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ5eHZ4dnN2aGl5ZXJ5YXZnYWZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwNzU3MjksImV4cCI6MjEwNzY1MTcyOX0.UU-Qs8cO4bcDZ-5qZA9xgEDRjLY1IDr65ZMaoyK3AsA',
     ),
   );
 
   static const String backendApiUrl = String.fromEnvironment(
     'BACKEND_API_URL',
-    defaultValue: 'http://localhost:3001',
+    defaultValue: 'https://byxvxvsvhiyeryavgafx.supabase.co',
   );
 
   static const String defaultNodeId = String.fromEnvironment(

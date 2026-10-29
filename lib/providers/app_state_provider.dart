@@ -54,17 +54,6 @@ class AppStateProvider extends ChangeNotifier {
   int _outboxDepth = 0;
   int get outboxDepth => _outboxDepth;
 
-  Map<String, int> _outboxStats = {
-    'PENDING': 0,
-    'RETRYING': 0,
-    'DEAD_LETTER': 0,
-    'TOTAL': 0,
-  };
-  Map<String, int> get outboxStats => _outboxStats;
-
-  List<Map<String, dynamic>> _deadLetterTokens = [];
-  List<Map<String, dynamic>> get deadLetterTokens => _deadLetterTokens;
-
   // Dispense Form State
   double _distQuantity = 5.0;
   double get distQuantity => _distQuantity;
@@ -134,8 +123,6 @@ class AppStateProvider extends ChangeNotifier {
       final fetchedRegs = await _repo.getRegistrations(isOnline: _isOnline);
       final fetchedAudit = await _repo.getAuditLogs(isOnline: _isOnline);
       final depth = await _repo.getOutboxDepth();
-      final stats = await _repo.getOutboxStats();
-      final dlq = await _repo.getDeadLetterTokens();
 
       _cards = fetchedCards;
       _lots = fetchedLots;
@@ -143,8 +130,6 @@ class AppStateProvider extends ChangeNotifier {
       _registrations = fetchedRegs;
       _auditLogs = fetchedAudit;
       _outboxDepth = depth;
-      _outboxStats = stats;
-      _deadLetterTokens = dlq;
 
       // Card Selection Preservation
       if (preferredCardId != null && _cards.any((c) => c.id == preferredCardId)) {
@@ -157,6 +142,8 @@ class AppStateProvider extends ChangeNotifier {
 
       // Lot Selection Preservation
       if (_distLotId.isEmpty && _lots.isNotEmpty) {
+        _distLotId = _lots.first.id;
+      } else if (!_lots.any((l) => l.id == _distLotId) && _lots.isNotEmpty) {
         _distLotId = _lots.first.id;
       }
 
@@ -212,8 +199,26 @@ class AppStateProvider extends ChangeNotifier {
   // --- Actions ---
 
   /// Execute Grain Dispense (Online vs Offline)
-  Future<void> executeDispense() async {
-    if (_selectedCardId.isEmpty || _distLotId.isEmpty) return;
+  Future<void> executeDispense({String? cardId, String? lotId}) async {
+    final effectiveCardId = (cardId != null && cardId.isNotEmpty)
+        ? cardId
+        : (_selectedCardId.isNotEmpty
+            ? _selectedCardId
+            : (_cards.isNotEmpty ? _cards.first.id : ''));
+
+    final effectiveLotId = (lotId != null && lotId.isNotEmpty)
+        ? lotId
+        : (_distLotId.isNotEmpty
+            ? _distLotId
+            : (_lots.isNotEmpty ? _lots.first.id : ''));
+
+    if (effectiveCardId.isEmpty || effectiveLotId.isEmpty) {
+      debugPrint('[AppStateProvider] executeDispense failed: card ($effectiveCardId) or lot ($effectiveLotId) is empty');
+      return;
+    }
+
+    _selectedCardId = effectiveCardId;
+    _distLotId = effectiveLotId;
 
     _distLoading = true;
     _distCurrentState = 'ATTEMPT';
@@ -223,8 +228,8 @@ class AppStateProvider extends ChangeNotifier {
     try {
       final res = await _repo.issueGrain(
         isOnline: _isOnline,
-        cardId: _selectedCardId,
-        lotId: _distLotId,
+        cardId: effectiveCardId,
+        lotId: effectiveLotId,
         nodeId: _selectedNodeId,
         quantity: _distQuantity,
         allowFallback: _distAllowFallback,
@@ -251,35 +256,17 @@ class AppStateProvider extends ChangeNotifier {
     }
   }
 
-  /// Re-queue a quarantined Dead-Letter Queue token for retry
-  Future<void> requeueDeadLetterToken(String tokenId) async {
-    await _repo.requeueDeadLetterToken(tokenId);
-    await loadAllData();
-  }
-
-  /// Trigger Resilient Chunked Batch Sync
+  /// Trigger Batch Sync Now
   Future<void> triggerBatchSync() async {
     _syncLoading = true;
     _syncNotice = null;
     notifyListeners();
 
     try {
-      final res = await _repo.triggerBatchSync(_selectedNodeId, chunkSize: 50);
-      final synced = res['synced'] ?? 0;
-      final dlq = res['quarantined_to_dlq'] ?? 0;
-      final retrying = res['retrying'] ?? 0;
-      final batches = res['batches_processed'] ?? 0;
-
-      if (dlq > 0) {
-        _syncNotice = 'Reconciliation completed ($batches batches). Synced: $synced, Quarantined to DLQ: $dlq.';
-      } else if (synced > 0) {
-        _syncNotice = 'Batch sync complete! Successfully synced $synced provisional tokens across $batches batches.';
-      } else if (retrying > 0) {
-        _syncNotice = 'Sync deferred: $retrying items in backoff retry window.';
-      } else {
-        _syncNotice = res['message'] ?? 'Terminal outbox is fully up to date.';
-      }
-
+      final res = await _repo.triggerBatchSync(_selectedNodeId);
+      final accepted = res['accepted'] ?? res['synced'] ?? 0;
+      final dup = res['duplicate'] ?? 0;
+      _syncNotice = 'Batch sync complete! Accepted: $accepted, Duplicates: $dup';
       await loadAllData();
     } catch (e) {
       _syncNotice = 'Sync failed: $e';
@@ -330,7 +317,22 @@ class AppStateProvider extends ChangeNotifier {
       // Switch to Dispense tab
       _activeTabIndex = 0;
       notifyListeners();
+    } else {
+      _regErrorMsg = res['message'] ?? 'Failed to approve registration and issue card.';
+      notifyListeners();
     }
+  }
+
+  /// Delete a single registration
+  Future<void> deleteRegistration(String regId) async {
+    await _repo.deleteRegistration(regId);
+    await loadAllData();
+  }
+
+  /// Delete all unapproved registrations (cleanup duplicates)
+  Future<void> clearUnapprovedRegistrations() async {
+    await _repo.clearUnapprovedRegistrations();
+    await loadAllData();
   }
 
   /// Reset Database

@@ -279,6 +279,8 @@ CREATE OR REPLACE FUNCTION fn_approve_registration(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_reg RECORD;
@@ -313,7 +315,7 @@ BEGIN
     END IF;
 
     -- 3. Create Person
-    v_person_id := 'person_' || encode(gen_random_bytes(8), 'hex');
+    v_person_id := 'person_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16);
     INSERT INTO persons (id, first_name, last_name, phone_number, dob)
     VALUES (
         v_person_id,
@@ -324,7 +326,7 @@ BEGIN
     );
 
     -- 4. Create Household Profile
-    v_profile_id := 'prof_' || encode(gen_random_bytes(8), 'hex');
+    v_profile_id := 'prof_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16);
     INSERT INTO household_profiles (id, person_id, family_count, yearly_income, address, city, state)
     VALUES (
         v_profile_id,
@@ -337,12 +339,12 @@ BEGIN
     );
 
     -- 5. Create Card
-    v_card_id := 'card_' || encode(gen_random_bytes(6), 'hex');
+    v_card_id := 'card_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 12);
     INSERT INTO cards (id, person_id, status, issued_at)
     VALUES (v_card_id, v_person_id, 'ACTIVE', NOW());
 
     -- 6. Allocate Monthly Quota Lease (associated with registration node)
-    v_quota_id := 'quota_' || encode(gen_random_bytes(6), 'hex');
+    v_quota_id := 'quota_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 12);
     INSERT INTO quota_leases (id, card_id, node_id, allocated_qty, consumed_qty, period_start)
     VALUES (v_quota_id, v_card_id, v_node_id, v_quota_amount, 0, CURRENT_DATE);
 
@@ -358,7 +360,7 @@ BEGIN
     -- 8. Audit Event
     INSERT INTO audit_events (id, actor_id, action, resource_type, resource_id, details, timestamp)
     VALUES (
-        'audit_' || encode(gen_random_bytes(8), 'hex'),
+        'audit_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16),
         p_actor_id,
         'REGISTRATION_APPROVED',
         'REGISTRATION',
@@ -398,6 +400,8 @@ CREATE OR REPLACE FUNCTION fn_online_dispense(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_cached RECORD;
@@ -440,15 +444,15 @@ BEGIN
 
     IF NOT FOUND OR (v_lease.allocated_qty - v_lease.consumed_qty) < p_quantity THEN
         -- Quota limit reached
-        v_txn_id := 'txn_' || encode(gen_random_bytes(8), 'hex');
+        v_txn_id := 'txn_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16);
         INSERT INTO distribution_transactions (id, card_id, node_id, lot_id, quantity, state, idempotency_key, failure_reason)
         VALUES (v_txn_id, p_card_id, p_node_id, p_lot_id, p_quantity, 'FAIL_REASON', p_idempotency_key, 'ERR_201');
 
         INSERT INTO transaction_state_history (id, txn_id, from_state, to_state, reason_code, actor_id)
-        VALUES ('hist_' || encode(gen_random_bytes(8), 'hex'), v_txn_id, 'ATTEMPT', 'FAIL_REASON', 'ERR_201', p_actor_id);
+        VALUES ('hist_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16), v_txn_id, 'ATTEMPT', 'FAIL_REASON', 'ERR_201', p_actor_id);
 
         INSERT INTO failures (id, txn_id, type, code, node_id, retryable, metadata)
-        VALUES ('fail_' || encode(gen_random_bytes(8), 'hex'), v_txn_id, 'TXN_FAILURE', 'ERR_201', p_node_id, false,
+        VALUES ('fail_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16), v_txn_id, 'TXN_FAILURE', 'ERR_201', p_node_id, false,
             jsonb_build_object('reason', 'Quota exceeded', 'card_id', p_card_id, 'requested', p_quantity));
 
         v_response := jsonb_build_object(
@@ -461,7 +465,7 @@ BEGIN
 
         IF p_idempotency_key IS NOT NULL AND p_idempotency_key <> '' THEN
             INSERT INTO idempotency_records (id, key, status_code, response_body)
-            VALUES ('idem_' || encode(gen_random_bytes(8), 'hex'), p_idempotency_key, 409, v_response);
+            VALUES ('idem_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16), p_idempotency_key, 409, v_response);
         END IF;
 
         RETURN v_response;
@@ -475,15 +479,15 @@ BEGIN
 
     IF v_lot.remaining_quantity < p_quantity THEN
         -- Lot depleted
-        v_txn_id := 'txn_' || encode(gen_random_bytes(8), 'hex');
+        v_txn_id := 'txn_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16);
         INSERT INTO distribution_transactions (id, card_id, node_id, lot_id, quantity, state, idempotency_key, failure_reason)
         VALUES (v_txn_id, p_card_id, p_node_id, p_lot_id, p_quantity, 'FAIL_REASON', p_idempotency_key, 'ERR_202');
 
         INSERT INTO transaction_state_history (id, txn_id, from_state, to_state, reason_code, actor_id)
-        VALUES ('hist_' || encode(gen_random_bytes(8), 'hex'), v_txn_id, 'ATTEMPT', 'FAIL_REASON', 'ERR_202', p_actor_id);
+        VALUES ('hist_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16), v_txn_id, 'ATTEMPT', 'FAIL_REASON', 'ERR_202', p_actor_id);
 
         INSERT INTO failures (id, txn_id, type, code, node_id, retryable, metadata)
-        VALUES ('fail_' || encode(gen_random_bytes(8), 'hex'), v_txn_id, 'TXN_FAILURE', 'ERR_202', p_node_id, false,
+        VALUES ('fail_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16), v_txn_id, 'TXN_FAILURE', 'ERR_202', p_node_id, false,
             jsonb_build_object('reason', 'Lot depleted', 'lot_id', p_lot_id, 'remaining', v_lot.remaining_quantity));
 
         v_response := jsonb_build_object(
@@ -496,7 +500,7 @@ BEGIN
 
         IF p_idempotency_key IS NOT NULL AND p_idempotency_key <> '' THEN
             INSERT INTO idempotency_records (id, key, status_code, response_body)
-            VALUES ('idem_' || encode(gen_random_bytes(8), 'hex'), p_idempotency_key, 409, v_response);
+            VALUES ('idem_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16), p_idempotency_key, 409, v_response);
         END IF;
 
         RETURN v_response;
@@ -514,19 +518,19 @@ BEGIN
     WHERE id = p_lot_id;
 
     -- 7. Record transaction & state transition (ATTEMPT -> PROVISIONAL_ISSUE -> RECONCILED)
-    v_txn_id := 'txn_' || encode(gen_random_bytes(8), 'hex');
+    v_txn_id := 'txn_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16);
     INSERT INTO distribution_transactions (id, card_id, node_id, lot_id, quantity, state, idempotency_key)
     VALUES (v_txn_id, p_card_id, p_node_id, p_lot_id, p_quantity, 'RECONCILED', p_idempotency_key);
 
     INSERT INTO transaction_state_history (id, txn_id, from_state, to_state, actor_id)
     VALUES
-        ('hist_' || encode(gen_random_bytes(8), 'hex'), v_txn_id, 'ATTEMPT', 'PROVISIONAL_ISSUE', p_actor_id),
-        ('hist_' || encode(gen_random_bytes(8), 'hex'), v_txn_id, 'PROVISIONAL_ISSUE', 'RECONCILED', p_actor_id);
+        ('hist_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16), v_txn_id, 'ATTEMPT', 'PROVISIONAL_ISSUE', p_actor_id),
+        ('hist_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16), v_txn_id, 'PROVISIONAL_ISSUE', 'RECONCILED', p_actor_id);
 
     -- 8. Audit Event
     INSERT INTO audit_events (id, actor_id, action, resource_type, resource_id, details)
     VALUES (
-        'audit_' || encode(gen_random_bytes(8), 'hex'),
+        'audit_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16),
         p_actor_id,
         'GRAIN_DISPENSED_ONLINE',
         'TRANSACTION',
@@ -554,7 +558,7 @@ BEGIN
 
     IF p_idempotency_key IS NOT NULL AND p_idempotency_key <> '' THEN
         INSERT INTO idempotency_records (id, key, status_code, response_body)
-        VALUES ('idem_' || encode(gen_random_bytes(8), 'hex'), p_idempotency_key, 201, v_response);
+        VALUES ('idem_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16), p_idempotency_key, 201, v_response);
     END IF;
 
     RETURN v_response;
@@ -571,6 +575,8 @@ CREATE OR REPLACE FUNCTION fn_reconcile_sync_batch(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_token RECORD;
@@ -602,7 +608,7 @@ BEGIN
     FOR v_token IN SELECT * FROM jsonb_array_elements(p_tokens)
     LOOP
         v_nonce := v_token.value->'payload'->>'n';
-        v_token_id := COALESCE(v_token.value->>'id', 'tok_' || encode(gen_random_bytes(6), 'hex'));
+        v_token_id := COALESCE(v_token.value->>'id', 'tok_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 12));
         v_lot_id := v_token.value->'payload'->>'lid';
         v_qty := (v_token.value->'payload'->>'qty')::NUMERIC;
         v_exp := (v_token.value->'payload'->>'exp')::BIGINT;
@@ -634,7 +640,7 @@ BEGIN
             -- Match card if possible
             SELECT id INTO v_card_id FROM cards LIMIT 1; -- fallback card reference
 
-            v_txn_id := COALESCE(v_token.value->'payload'->>'tid', 'txn_' || encode(gen_random_bytes(8), 'hex'));
+            v_txn_id := COALESCE(v_token.value->'payload'->>'tid', 'txn_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16));
 
             -- Record provisional token in DB
             INSERT INTO provisional_tokens (id, txn_id, payload, signature, key_id, nonce, counter, reconciliation_status)
@@ -654,7 +660,7 @@ BEGIN
 
         -- Record Batch Item ACK
         INSERT INTO sync_batch_items (id, batch_id, token_id, nonce, ack_status, reason_code)
-        VALUES ('ack_' || encode(gen_random_bytes(6), 'hex'), p_batch_id, v_token_id, v_nonce, v_ack_status, v_reason);
+        VALUES ('ack_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 12), p_batch_id, v_token_id, v_nonce, v_ack_status, v_reason);
 
         v_acks := v_acks || jsonb_build_object(
             'token_id', v_token_id,
@@ -683,7 +689,7 @@ BEGIN
     -- 5. Audit Log
     INSERT INTO audit_events (id, actor_id, action, resource_type, resource_id, details)
     VALUES (
-        'audit_' || encode(gen_random_bytes(8), 'hex'),
+        'audit_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16),
         p_actor_id,
         'BATCH_SYNC_PROCESSED',
         'NODE',
@@ -713,6 +719,8 @@ $$;
 CREATE OR REPLACE FUNCTION fn_reset_database(p_actor_id TEXT DEFAULT 'admin')
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 BEGIN
     TRUNCATE TABLE
@@ -736,7 +744,7 @@ BEGIN
 
     INSERT INTO audit_events (id, actor_id, action, resource_type, resource_id, details)
     VALUES (
-        'audit_' || encode(gen_random_bytes(8), 'hex'),
+        'audit_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16),
         p_actor_id,
         'DATABASE_RESET',
         'SYSTEM',
@@ -769,6 +777,9 @@ CREATE POLICY "Public read grain_lots" ON grain_lots FOR SELECT USING (true);
 CREATE POLICY "Public read registrations" ON registrations FOR SELECT USING (true);
 CREATE POLICY "Public insert registrations" ON registrations FOR INSERT WITH CHECK (true);
 CREATE POLICY "Public update registrations" ON registrations FOR UPDATE USING (true);
+CREATE POLICY "Public delete registrations" ON registrations FOR DELETE USING (status <> 'APPROVED');
+CREATE POLICY "Public read persons" ON persons FOR SELECT USING (true);
+CREATE POLICY "Public read household_profiles" ON household_profiles FOR SELECT USING (true);
 CREATE POLICY "Public read cards" ON cards FOR SELECT USING (true);
 CREATE POLICY "Public read quota_leases" ON quota_leases FOR SELECT USING (true);
 CREATE POLICY "Public read distribution_transactions" ON distribution_transactions FOR SELECT USING (true);

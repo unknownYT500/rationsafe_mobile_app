@@ -19,7 +19,7 @@ class _RegistrationTabState extends State<RegistrationTab> {
 
   final _firstNameCtrl = TextEditingController(text: 'Ramesh');
   final _lastNameCtrl = TextEditingController(text: 'Sharma');
-  final _phoneCtrl = TextEditingController(text: '9876543210');
+  late final TextEditingController _phoneCtrl;
   final _dobCtrl = TextEditingController(text: '1988-06-15');
   final _familyCountCtrl = TextEditingController(text: '4');
   final _incomeCtrl = TextEditingController(text: '48000');
@@ -27,6 +27,13 @@ class _RegistrationTabState extends State<RegistrationTab> {
   final _cityCtrl = TextEditingController(text: 'Kanpur');
   final _stateCtrl = TextEditingController(text: 'Uttar Pradesh');
   bool _consent = true;
+
+  @override
+  void initState() {
+    super.initState();
+    final randomPhone = '98${Random().nextInt(89999999) + 10000000}';
+    _phoneCtrl = TextEditingController(text: randomPhone);
+  }
 
   static final List<Map<String, dynamic>> _sampleCitizens = [
     {
@@ -346,6 +353,45 @@ class _RegistrationTabState extends State<RegistrationTab> {
                   color: AppColors.textDim,
                 ),
               ),
+              if (state.registrations.any((r) => r.status != 'APPROVED'))
+                InkWell(
+                  onTap: () {
+                    showDialog(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        backgroundColor: AppColors.bgSecondary,
+                        title: const Text('Clear Unapproved Registrations?'),
+                        content: const Text(
+                          'This will remove all pending, unverified, and duplicate registration drafts. Approved cards will not be affected.',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx),
+                            child: const Text('Cancel'),
+                          ),
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(backgroundColor: AppColors.rose500),
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                              state.clearUnapprovedRegistrations();
+                            },
+                            child: const Text('Delete Drafts'),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                  child: Row(
+                    children: const [
+                      Icon(Icons.delete_sweep_outlined, size: 16, color: AppColors.rose400),
+                      SizedBox(width: 4),
+                      Text(
+                        'Clear Drafts',
+                        style: TextStyle(color: AppColors.rose400, fontSize: 11, fontWeight: FontWeight.w700),
+                      ),
+                    ],
+                  ),
+                ),
             ],
           ),
           const SizedBox(height: 10),
@@ -407,8 +453,22 @@ class _RegistrationTabState extends State<RegistrationTab> {
                       ),
                       const SizedBox(height: 10),
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
+                          if (reg.status != 'APPROVED')
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline, size: 18, color: AppColors.rose400),
+                              tooltip: 'Delete Draft',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              onPressed: () => state.deleteRegistration(reg.id),
+                            )
+                          else
+                            const SizedBox.shrink(),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
                           if (reg.status == 'SUBMITTED')
                             OutlinedButton(
                               style: OutlinedButton.styleFrom(
@@ -449,6 +509,8 @@ class _RegistrationTabState extends State<RegistrationTab> {
                             ),
                         ],
                       ),
+                    ],
+                  ),
                     ],
                   ),
                 ),

@@ -9,6 +9,7 @@ import '../models/grain_lot.dart';
 import '../models/distribution_node.dart';
 import '../models/registration.dart';
 import '../models/audit_log.dart';
+import '../crypto/hash_utils.dart';
 
 class SupabaseService {
   static final SupabaseService instance = SupabaseService._init();
@@ -19,6 +20,7 @@ class SupabaseService {
   bool get isReady => _isInitialized && !AppEnv.supabaseAnonKey.contains('dummy');
 
   Future<void> initialize() async {
+    if (_isInitialized) return;
     try {
       if (!AppEnv.supabaseAnonKey.contains('dummy')) {
         await Supabase.initialize(
@@ -87,33 +89,43 @@ class SupabaseService {
             .from('cards')
             .select('''
               id, person_id, status, issued_at,
-              persons (first_name, last_name, phone_number),
-              household_profiles (family_count, address, city, state),
+              persons (
+                first_name, last_name, phone_number,
+                household_profiles (family_count, address, city, state)
+              ),
               quota_leases (allocated_qty, consumed_qty)
             ''');
 
         return (res as List).map((row) {
           final p = row['persons'] as Map<String, dynamic>? ?? {};
-          final h = row['household_profiles'] as Map<String, dynamic>? ?? {};
+          final hProfiles = p['household_profiles'];
+          final h = (hProfiles is List && hProfiles.isNotEmpty)
+              ? hProfiles.first as Map<String, dynamic>
+              : (hProfiles is Map<String, dynamic> ? hProfiles : <String, dynamic>{});
           final qList = row['quota_leases'] as List? ?? [];
           final q = qList.isNotEmpty ? qList.first as Map<String, dynamic> : {};
 
           final alloc = (q['allocated_qty'] as num?)?.toDouble() ?? 0.0;
           final cons = (q['consumed_qty'] as num?)?.toDouble() ?? 0.0;
 
+          final fName = p['first_name']?.toString() ?? '';
+          final lName = p['last_name']?.toString() ?? '';
+          final full = '$fName $lName'.trim();
+          final cardId = row['id']?.toString() ?? '';
+
           return CardBeneficiary(
-            id: row['id'] ?? '',
-            personId: row['person_id'] ?? '',
-            status: row['status'] ?? 'ACTIVE',
-            issuedAt: row['issued_at'] ?? '',
-            firstName: p['first_name'] ?? '',
-            lastName: p['last_name'] ?? '',
-            fullName: '${p['first_name'] ?? ''} ${p['last_name'] ?? ''}'.trim(),
-            phoneNumber: p['phone_number'] ?? '',
+            id: cardId,
+            personId: row['person_id']?.toString() ?? '',
+            status: row['status']?.toString() ?? 'ACTIVE',
+            issuedAt: row['issued_at']?.toString() ?? '',
+            firstName: fName,
+            lastName: lName,
+            fullName: full.isEmpty ? 'Citizen ($cardId)' : full,
+            phoneNumber: p['phone_number']?.toString() ?? '',
             familyCount: (h['family_count'] as num?)?.toInt() ?? 1,
-            address: h['address'] ?? '',
-            city: h['city'] ?? '',
-            state: h['state'] ?? '',
+            address: h['address']?.toString() ?? '',
+            city: h['city']?.toString() ?? '',
+            state: h['state']?.toString() ?? '',
             allocatedQty: alloc,
             consumedQty: cons,
             remainingQty: alloc - cons,
@@ -185,7 +197,21 @@ class SupabaseService {
     if (isReady && client != null) {
       try {
         final res = await client!.from('registrations').select().order('created_at', ascending: false);
-        return (res as List).map((r) => RegistrationItem.fromJson(r)).toList();
+        return (res as List)
+            .where((r) {
+              final id = r['id']?.toString() ?? '';
+              if (id.startsWith('mach_') || id.contains('telemetry')) return false;
+              final data = r['data'];
+              if (data is Map) {
+                if (data['type'] == 'MACHINE_TELEMETRY') return false;
+                final fName = data['first_name']?.toString() ?? '';
+                final phone = data['phone_number']?.toString() ?? '';
+                if (fName.isEmpty && phone.isEmpty) return false;
+              }
+              return true;
+            })
+            .map((r) => RegistrationItem.fromJson(r))
+            .toList();
       } catch (e) {
         debugPrint('[Supabase] fetchRegistrations error: $e');
       }
@@ -249,7 +275,13 @@ class SupabaseService {
         });
         return Map<String, dynamic>.from(res);
       } catch (e) {
-        debugPrint('[Supabase RPC] fn_online_dispense error: $e. Falling back to HTTP.');
+        debugPrint('[Supabase RPC] fn_online_dispense error: $e');
+        return {
+          'success': false,
+          'code': 'ERR_DISPENSE_FAILED',
+          'state': 'FAIL_REASON',
+          'message': e.toString(),
+        };
       }
     }
 
@@ -301,6 +333,21 @@ class SupabaseService {
     final payload = Map<String, dynamic>.from(data);
     payload['node_id'] = nodeId;
 
+    if (isReady && client != null) {
+      try {
+        final regId = 'reg_${generateUuidV7()}';
+        await client!.from('registrations').insert({
+          'id': regId,
+          'status': 'SUBMITTED',
+          'node_id': nodeId,
+          'data': payload,
+        });
+        return {'success': true, 'data': {'id': regId}};
+      } catch (e) {
+        debugPrint('[Supabase] submitRegistration error: $e. Falling back to HTTP.');
+      }
+    }
+
     try {
       final url = Uri.parse('${AppEnv.backendApiUrl}/api/v1/registrations');
       final res = await http.post(
@@ -320,6 +367,15 @@ class SupabaseService {
 
   /// Verify Registration
   Future<bool> verifyRegistration(String regId) async {
+    if (isReady && client != null) {
+      try {
+        await client!.from('registrations').update({'status': 'VERIFIED'}).eq('id', regId);
+        return true;
+      } catch (e) {
+        debugPrint('[Supabase] verifyRegistration error: $e. Falling back to HTTP.');
+      }
+    }
+
     try {
       final url = Uri.parse('${AppEnv.backendApiUrl}/api/v1/registrations/$regId/verify');
       final res = await http.post(url);
@@ -327,6 +383,41 @@ class SupabaseService {
     } catch (_) {
       return false;
     }
+  }
+
+  /// Delete Registration
+  Future<bool> deleteRegistration(String regId) async {
+    if (isReady && client != null) {
+      try {
+        await client!.from('registrations').delete().eq('id', regId);
+        return true;
+      } catch (e) {
+        debugPrint('[Supabase] deleteRegistration error: $e');
+        // Try fallback RPC if defined
+        try {
+          await client!.rpc('fn_delete_registration', params: {'p_reg_id': regId});
+          return true;
+        } catch (_) {}
+      }
+    }
+    return false;
+  }
+
+  /// Clear all unapproved registrations (SUBMITTED / VERIFIED / REJECTED)
+  Future<bool> clearUnapprovedRegistrations() async {
+    if (isReady && client != null) {
+      try {
+        await client!.from('registrations').delete().neq('status', 'APPROVED');
+        return true;
+      } catch (e) {
+        debugPrint('[Supabase] clearUnapprovedRegistrations error: $e');
+        try {
+          await client!.rpc('fn_clear_unapproved_registrations');
+          return true;
+        } catch (_) {}
+      }
+    }
+    return false;
   }
 
   /// Approve Registration & Issue Card
@@ -340,6 +431,7 @@ class SupabaseService {
         return {'success': true, 'data': res};
       } catch (e) {
         debugPrint('[Supabase RPC] fn_approve_registration error: $e');
+        return {'success': false, 'message': e.toString()};
       }
     }
 
@@ -399,6 +491,15 @@ class SupabaseService {
 
   /// Reset Database (Demo Reset)
   Future<bool> resetDatabase() async {
+    if (isReady && client != null) {
+      try {
+        await client!.rpc('fn_reset_database');
+        return true;
+      } catch (e) {
+        debugPrint('[Supabase RPC] fn_reset_database error: $e');
+      }
+    }
+
     try {
       final url = Uri.parse('${AppEnv.backendApiUrl}/api/v1/admin/reset');
       final res = await http.post(url);

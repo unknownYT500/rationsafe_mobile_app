@@ -4,9 +4,11 @@ import 'package:provider/provider.dart';
 import 'theme/app_theme.dart';
 import 'providers/app_state_provider.dart';
 import 'screens/main_screen.dart';
+import 'data/supabase_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SupabaseService.instance.initialize();
   runApp(
     MultiProvider(
       providers: [
